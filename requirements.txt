@@ -1,0 +1,22 @@
+# Core Dependencies
+numpy<2
+torch>=2.0.0
+transformers>=4.35.0
+accelerate>=0.24.0
+bitsandbytes>=0.41.0
+
+# Embedding and Vector Search
+sentence-transformers>=2.2.2
+faiss-gpu>=1.7.2  # Use faiss-cpu if no GPU available
+
+# Configuration and Utilities
+pyyaml>=6.0
+requests>=2.31.0
+colorama>=0.4.6
+
+# Optional: Flash Attention (for faster inference)
+# flash-attn>=2.3.0  # Uncomment if you want to use Flash Attention 2
+
+# Development Tools (Optional)
+# ipython
+# jupyter

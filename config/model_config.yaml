@@ -1,0 +1,42 @@
+# ChatBot Configuration File
+
+# Backend selection: "transformers" or "ollama"
+# backend: "ollama"  # Default to Ollama for ease of use
+backend: "transformers"  # Default to Transformers for flexibility
+
+# Ollama Configuration
+ollama:
+  model_name: "mistral:7b-instruct"  # or llama3.1:8b, gemma:7b
+  base_url: "http://localhost:11434"
+  temperature: 0.7
+  top_p: 0.9
+  max_tokens: 512
+  stream: true
+
+# Transformers Configuration (HuggingFace)
+transformers:
+  model_name: "mistralai/Mistral-7B-Instruct-v0.2"  # or meta-llama/Meta-Llama-3.1-8B-Instruct
+  device: "cuda"  # or "cpu"
+  load_in_4bit: true  # Use 4-bit quantization to fit in 12GB VRAM
+  use_flash_attention_2: false  # Set to true if flash-attn installed
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 50
+  max_new_tokens: 512
+  repetition_penalty: 1.1
+
+# Embedding Model Configuration
+embedding:
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  device: "cuda"  # or "cpu"
+
+# Memory Configuration
+memory:
+  max_active_turns: 5  # Keep last 5 conversation turns in active memory
+  rag_top_k: 3  # Retrieve top 3 similar past conversations from RAG
+
+# FAISS Configuration
+faiss:
+  index_path: "./faiss_index"  # Path to save/load FAISS index
+  index_file: "conversation_index.faiss"
+  metadata_file: "conversation_metadata.pkl"
