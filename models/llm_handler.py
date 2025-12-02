@@ -14,6 +14,8 @@ from transformers import (
     TextIteratorStreamer,
 )
 
+from utils.timing import measure_generation
+
 
 class BaseLLM:
     """Base class for LLM handlers."""
@@ -73,9 +75,7 @@ class TransformersLLM(BaseLLM):
         model_kwargs = {
             "quantization_config": quantization_config,
             "device_map": "auto" if torch.cuda.is_available() else None,
-            "dtype": torch.float16
-            if torch.cuda.is_available()
-            else torch.float32,
+            "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
         }
 
         # Add Flash Attention 2 if requested
@@ -131,13 +131,12 @@ class TransformersLLM(BaseLLM):
         # Generation in separate thread
         generation_kwargs = {**inputs, **gen_params, "streamer": streamer}
         thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+        # Generate response
         thread.start()
 
-        # Stream tokens
-        for text in streamer:
-            yield text
-
-        thread.join()
+        # Stream tokens and measure generation
+        generator = (text for text in streamer)
+        return measure_generation(generator)
 
 
 class TransformersNoGradLLM(TransformersLLM):
@@ -161,7 +160,7 @@ class TransformersNoGradLLM(TransformersLLM):
             Generated text tokens
         """
         with torch.no_grad():
-            yield from super().generate(messages, **kwargs)
+            return super().generate(messages, **kwargs)
 
 
 class TransformersInferenceModeLLM(TransformersLLM):
@@ -186,7 +185,7 @@ class TransformersInferenceModeLLM(TransformersLLM):
             Generated text tokens
         """
         with torch.inference_mode():
-            yield from super().generate(messages, **kwargs)
+            return super().generate(messages, **kwargs)
 
 
 class OllamaLLM(BaseLLM):
@@ -254,21 +253,24 @@ class OllamaLLM(BaseLLM):
             )
             response.raise_for_status()
 
-            # Stream response
-            for line in response.iter_lines():
-                if line:
-                    try:
-                        data = json.loads(line)
-                        if "message" in data and "content" in data["message"]:
-                            content = data["message"]["content"]
-                            if content:
-                                yield content
+            # Create a generator for the response content
+            def response_generator():
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            if "message" in data and "content" in data["message"]:
+                                content = data["message"]["content"]
+                                if content:
+                                    yield content
 
-                        # Check if generation is done
-                        if data.get("done", False):
-                            break
-                    except json.JSONDecodeError:
-                        continue
+                            # Check if generation is done
+                            if data.get("done", False):
+                                break
+                        except json.JSONDecodeError:
+                            continue
+
+            return measure_generation(response_generator())
 
         except requests.exceptions.RequestException as e:
             print(f"Error connecting to Ollama: {e}")
@@ -560,13 +562,15 @@ class vLLM(BaseLLM):
 
                 stream = self.client.chat.completions.create(**gen_params)
 
-                # Stream tokens as they arrive
-                for chunk in stream:
-                    if chunk.choices and len(chunk.choices) > 0:
-                        delta = chunk.choices[0].delta
-                        if delta.content:
-                            yield delta.content
-                return
+                def chat_generator():
+                    # Stream tokens as they arrive
+                    for chunk in stream:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            delta = chunk.choices[0].delta
+                            if delta.content:
+                                yield delta.content
+
+                return measure_generation(chat_generator())
 
             except Exception as e:
                 error_str = str(e)
@@ -594,12 +598,15 @@ class vLLM(BaseLLM):
 
                 stream = self.client.completions.create(**gen_params)
 
-                # Stream tokens as they arrive
-                for chunk in stream:
-                    if chunk.choices and len(chunk.choices) > 0:
-                        text = chunk.choices[0].text
-                        if text:
-                            yield text
+                def completion_generator():
+                    # Stream tokens as they arrive
+                    for chunk in stream:
+                        if chunk.choices and len(chunk.choices) > 0:
+                            text = chunk.choices[0].text
+                            if text:
+                                yield text
+
+                return measure_generation(completion_generator())
 
             except Exception as e:
                 print(f"Error during vLLM generation: {e}")
