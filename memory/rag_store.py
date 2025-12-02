@@ -5,6 +5,8 @@ from typing import Dict, List, Tuple
 import faiss
 import numpy as np
 
+from utils.timing import measure_time
+
 
 class RAGStore:
     """
@@ -104,7 +106,8 @@ class RAGStore:
         k = min(top_k, self.index.ntotal)
 
         # Search
-        scores, indices = self.index.search(query_embedding.astype("float32"), k)
+        with measure_time("RAG search time"):
+            scores, indices = self.index.search(query_embedding.astype("float32"), k)
 
         # Prepare results
         results = []

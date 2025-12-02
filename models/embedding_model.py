@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
 
+from utils.timing import measure_time
+
 
 class EmbeddingModel:
     """
@@ -44,13 +46,14 @@ class EmbeddingModel:
         if isinstance(texts, str):
             texts = [texts]
 
-        embeddings = self.model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            normalize_embeddings=True,  # Normalize for cosine similarity
-        )
+        with measure_time("Embedding generation time"):
+            embeddings = self.model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True,  # Normalize for cosine similarity
+            )
 
         return embeddings
 
