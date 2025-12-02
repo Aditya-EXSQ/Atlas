@@ -451,7 +451,7 @@ class vLLM(BaseLLM):
                     if response.status_code == 200:
                         print("✓ Server is ready!")
                         return self.server_process
-                except:
+                except requests.exceptions.RequestException:
                     if i % 5 == 0:
                         print(f"Still waiting... ({i * 2}s)")
                     continue
