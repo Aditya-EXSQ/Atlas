@@ -121,6 +121,7 @@ class TransformersLLM(BaseLLM):
                 "repetition_penalty", self.config.get("repetition_penalty", 1.1)
             ),
             "do_sample": True,
+            "pad_token_id": self.tokenizer.eos_token_id,  # Prevent warning
         }
 
         # Create streamer

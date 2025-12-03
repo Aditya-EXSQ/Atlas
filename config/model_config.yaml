@@ -88,13 +88,20 @@ embedding:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
   device: "cuda"  # or "cpu"
 
+# Reranker Configuration
+reranker:
+  model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  device: "cuda"  # or "cpu"
+
 # Memory Configuration
 memory:
   max_active_turns: 5  # Keep last 5 conversation turns in active memory
-  rag_top_k: 3  # Retrieve top 3 similar past conversations from RAG
+  rag_retrieve_k: 50  # Retrieve top 50 candidates from FAISS
+  rag_rerank_k: 5  # Rerank and use top 5 most relevant memories
+  persist_min_length: 15  # Minimum message length to persist to long-term memory
 
 # FAISS Configuration
 faiss:
   index_path: "./faiss_index"  # Path to save/load FAISS index
   index_file: "conversation_index.faiss"
-  metadata_file: "conversation_metadata.pkl"
+  db_file: "rag_metadata.db"  # SQLite database for metadata
