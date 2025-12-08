@@ -199,6 +199,8 @@ class TransformersLLM(BaseLLM):
         
         model_kwargs = {
             "device_map": device_map_value,
+        model_kwargs = {
+            "device_map": "auto" if torch.cuda.is_available() else None,
             "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
             "trust_remote_code": True,
         }
