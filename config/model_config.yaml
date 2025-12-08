@@ -2,8 +2,8 @@
 
 # Backend selection: "transformers", "ollama", or "vllm"
 # backend: "ollama"  # Default to Ollama for ease of use
-# backend: "transformers"  # Default to Transformers for flexibility
-backend: "transformers_no_grad"
+backend: "transformers"  # Default to Transformers for flexibility
+# backend: "transformers_no_grad"
 # backend: "transformers_inference_mode"
 # backend: "vllm"  # Use vLLM for high-performance inference
 

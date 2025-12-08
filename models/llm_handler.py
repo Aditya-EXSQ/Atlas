@@ -150,6 +150,77 @@ class TransformersLLM(BaseLLM):
             print(f"Failed to load with AutoAWQ: {e}")
             raise
 
+    def _load_model(self, model_name: str, model_kwargs: dict):
+        """
+        Load model using standard transformers loading.
+
+        Args:
+            model_name: HuggingFace model name or path
+            model_kwargs: Dictionary of kwargs to pass to model loading
+
+        Returns:
+            Loaded model instance
+
+        Raises:
+            Exception: If model loading fails
+        """
+        quantization_config = model_kwargs.get("quantization_config")
+        try:
+            model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+            print(f"✓ Model loaded successfully on: {model.device}")
+            return model
+        except Exception as e:
+            # If loading fails with quantization, try without it
+            if "quantization" in str(e).lower() and quantization_config is not None:
+                print(f"⚠ Loading with quantization failed: {e}")
+                print("Retrying without quantization...")
+                model_kwargs.pop("quantization_config", None)
+                model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+                print(f"✓ Model loaded successfully on: {model.device}")
+                return model
+            else:
+                raise
+
+    def _load_quantized_model(
+        self, model_name: str, quant_method: str, model_kwargs: dict
+    ):
+        """
+        Load model with appropriate method based on quantization type.
+
+        This method handles loading pre-quantized models using specialized loaders.
+        If the specialized loader fails, it falls back to standard loading.
+
+        Args:
+            model_name: HuggingFace model name or path
+            quant_method: Detected quantization method ('awq', 'gptq', etc.)
+            model_kwargs: Dictionary of kwargs to pass to model loading
+
+        Returns:
+            Loaded model instance
+
+        Raises:
+            Exception: If model loading fails
+        """
+        # Try AutoAWQ for AWQ models
+        if quant_method == "awq" and AUTOAWQ_AVAILABLE:
+            try:
+                print("Attempting to load AWQ model with AutoAWQ library...")
+                model = self._load_awq_model(model_name)
+                print("✓ Model loaded successfully with AutoAWQ")
+                return model
+            except Exception as e:
+                print(f"AutoAWQ loading failed: {e}")
+                print("Falling back to standard transformers loading...")
+
+        # TODO: Add support for other quantization methods here
+        # elif quant_method == "gptq" and GPTQ_AVAILABLE:
+        #     return self._load_gptq_model(model_name, model_kwargs)
+        # elif quant_method == "gguf" and GGUF_AVAILABLE:
+        #     return self._load_gguf_model(model_name, model_kwargs)
+
+        # Fallback to standard loading if specialized loader fails
+        return self._load_model(model_name, model_kwargs)
+
     def __init__(self, config: dict):
         """
         Initialize Transformers model with automatic quantization detection.
@@ -163,40 +234,28 @@ class TransformersLLM(BaseLLM):
 
         print(f"Loading Transformers model: {model_name}")
 
-        # Detect quantization method
-        quant_method = self._detect_quantization_method(model_name)
-
-        # Load tokenizer
+        # Step 1: Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name, trust_remote_code=True
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Handle AWQ models specially
-        if quant_method == "awq":
-            print(f"⚠ Model is pre-quantized with: {quant_method}")
-
-            # Try to load with AutoAWQ first
-            if AUTOAWQ_AVAILABLE:
-                try:
-                    self.model = self._load_awq_model(model_name)
-                    return  # Success, early return
-                except Exception as e:
-                    print(f"AutoAWQ loading failed: {e}")
-                    print("Falling back to standard transformers loading...")
-            else:
-                print("AutoAWQ not available, trying standard transformers loading...")
-
-        # Standard loading path (for non-AWQ or if AWQ loading failed)
+        # Step 2: Check quantization
+        quant_method = self._detect_quantization_method(model_name)
         quantization_config = self._get_quantization_config(model_name, load_in_4bit)
 
+        # Step 3: Check for flash attention if requested
+        use_flash_attention = config.get("use_flash_attention_2", False)
+        if use_flash_attention:
+            print("Using Flash Attention 2")
+
+        # Step 4: Load the model
         # Prepare model loading kwargs
-        # Get appropriate device_map based on quantization method
         device_map_value = get_device_map_for_quantization(
             quant_method, torch.cuda.is_available()
         )
-            
+
         model_kwargs = {
             "device_map": device_map_value,
             "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -208,28 +267,14 @@ class TransformersLLM(BaseLLM):
             model_kwargs["quantization_config"] = quantization_config
 
         # Add Flash Attention 2 if requested
-        if config.get("use_flash_attention_2", False):
+        if use_flash_attention:
             model_kwargs["attn_implementation"] = "flash_attention_2"
-            print("Using Flash Attention 2")
 
-        # Load model with error handling
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name, **model_kwargs
-            )
-            print(f"✓ Model loaded successfully on: {self.model.device}")
-        except Exception as e:
-            # If loading fails with quantization, try without it
-            if "quantization" in str(e).lower() and quantization_config is not None:
-                print(f"⚠ Loading with quantization failed: {e}")
-                print("Retrying without quantization...")
-                model_kwargs.pop("quantization_config", None)
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_name, **model_kwargs
-                )
-                print(f"✓ Model loaded successfully on: {self.model.device}")
-            else:
-                raise
+        # Load model using appropriate method
+        if quant_method:
+            self.model = self._load_quantized_model(model_name, quant_method, model_kwargs)
+        else:
+            self.model = self._load_model(model_name, model_kwargs)
 
     def generate(self, messages: List[Dict[str, str]], **kwargs) -> Iterator[str]:
         """
