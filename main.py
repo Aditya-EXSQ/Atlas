@@ -3,14 +3,14 @@
 Multi-Turn Conversational ChatBot with Memory and RAG
 ======================================================
 A chatbot with conversation memory management using FAISS-based RAG.
-Supports both HuggingFace Transformers and Ollama backends.
-
+Supports HuggingFace Transformers, Ollama and vLLM backends.
+`
 Features:
 - Maintains last 5 conversation turns in active memory
 - Archives older conversations in FAISS vector store
 - Retrieves relevant past context using RAG
 - Streaming response generation
-- Supports multiple LLM backends (Transformers/Ollama)
+- Supports multiple LLM backends (Transformers/Ollama/vLLM)
 """
 
 import os
@@ -81,7 +81,6 @@ class ChatBot:
         )
         self.rag_retrieve_k = memory_config.get("rag_retrieve_k", 50)
         self.rag_rerank_k = memory_config.get("rag_rerank_k", 5)
-        self.persist_min_length = memory_config.get("persist_min_length", 15)
 
         # Initialize LLM
         print_colored("\n[5/5] Loading LLM...", "system")
@@ -135,28 +134,6 @@ class ChatBot:
 
         return "\n".join(context_parts) + "\n"
 
-    def _decide_persist(self, text: str) -> bool:
-        """
-        Decide whether to persist a message to long-term memory.
-        Simple heuristic: message length > threshold and not a greeting.
-
-        Args:
-            text: Message text
-
-        Returns:
-            True if should persist, False otherwise
-        """
-        # Skip short messages
-        if len(text) < self.persist_min_length:
-            return False
-
-        # Skip common greetings
-        greetings = {"hi", "hello", "hey", "bye", "goodbye", "thanks", "thank you"}
-        if text.lower().strip() in greetings:
-            return False
-
-        return True
-
     def _archive_turn(self, turn: Dict[str, str]):
         """
         Archive a turn to the RAG store.
@@ -171,6 +148,19 @@ class ChatBot:
         embedding = self.embedding_model.encode(turn_text)
         memory_type = turn.get("role", "user")
         self.rag_store.add(embedding, turn["content"], memory_type=memory_type)
+
+    def _save_remaining_turns(self):
+        """
+        Save all remaining active turns to RAG store.
+        Called when user exits to persist unarchived conversation.
+        """
+        active_turns = self.conversation_manager.get_active_turns()
+        if active_turns:
+            print_colored(
+                f"\n[💾 Saving {len(active_turns)} remaining turns to RAG]", "system"
+            )
+            for turn in active_turns:
+                self._archive_turn(turn)
 
     def generate_response(self, user_message: str) -> str:
         """
@@ -189,12 +179,6 @@ class ChatBot:
         if archived_turn:
             print_colored("\n[📦 Archived old turn to RAG]", "system")
             self._archive_turn(archived_turn)
-
-        # Persist to long-term memory if appropriate
-        if self._decide_persist(user_message):
-            # Embed and add current message to long-term store
-            embedding = self.embedding_model.encode(user_message)
-            self.rag_store.add(embedding, user_message, memory_type="user")
 
         # Retrieve RAG context
         rag_context = self._retrieve_rag_context(user_message)
@@ -255,7 +239,8 @@ class ChatBot:
 
                 # Check for exit commands
                 if user_input.lower() in ["exit", "quit", "bye", "q"]:
-                    print_colored("\nGoodbye! Saving RAG store...", "system")
+                    print_colored("\nGoodbye! Saving conversation...", "system")
+                    self._save_remaining_turns()
                     self.rag_store.save()
                     print_colored("✓ Conversation saved successfully!", "system")
                     break
@@ -273,12 +258,14 @@ class ChatBot:
                 print_colored(f"\n[{status} | RAG Store: {rag_size} turns]\n", "system")
 
         except KeyboardInterrupt:
-            print_colored("\n\nInterrupted! Saving RAG store...", "system")
+            print_colored("\n\nInterrupted! Saving conversation...", "system")
+            self._save_remaining_turns()
             self.rag_store.save()
             print_colored("✓ Conversation saved successfully!", "system")
 
         except Exception as e:
             print_colored(f"\nError in chat loop: {e}", "error")
+            self._save_remaining_turns()
             self.rag_store.save()
 
 

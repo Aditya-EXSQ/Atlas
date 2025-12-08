@@ -8,12 +8,20 @@ import requests
 import torch
 from openai import OpenAI
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
     TextIteratorStreamer,
 )
 
+# Import quantization library availability flags and classes
+from models.quantization_config import (
+    AUTOAWQ_AVAILABLE,
+    AWQ_AVAILABLE,  # noqa: F401
+    AutoAWQForCausalLM,
+    AwqConfig,  # noqa: F401
+)
 from utils.timing import measure_generation
 
 
@@ -36,56 +44,186 @@ class BaseLLM:
 
 class TransformersLLM(BaseLLM):
     """
-    LLM handler using HuggingFace Transformers with 4-bit quantization.
+    LLM handler using HuggingFace Transformers with automatic quantization detection.
     """
+
+    @staticmethod
+    def _detect_quantization_method(model_name: str) -> Optional[str]:
+        """
+        Detect if a model is pre-quantized and which method is used.
+
+        Args:
+            model_name: HuggingFace model name or path
+
+        Returns:
+            Quantization method name ('awq', 'gptq', etc.) or None if not quantized
+        """
+        try:
+            model_config = AutoConfig.from_pretrained(
+                model_name, trust_remote_code=True
+            )
+            existing_quant = getattr(model_config, "quantization_config", None)
+
+            if existing_quant:
+                # Extract quantization method
+                if isinstance(existing_quant, dict):
+                    return existing_quant.get("quant_method", "unknown")
+                else:
+                    return getattr(existing_quant, "quant_method", "unknown")
+
+            return None
+        except Exception as e:
+            print(f"Warning: Could not detect quantization method: {e}")
+            return None
+
+    @staticmethod
+    def _get_quantization_config(
+        model_name: str, load_in_4bit: bool = True
+    ) -> Optional[BitsAndBytesConfig]:
+        """
+        Get the appropriate quantization config for a model.
+
+        Args:
+            model_name: HuggingFace model name or path
+            load_in_4bit: Whether to apply 4-bit quantization if model is not pre-quantized
+
+        Returns:
+            BitsAndBytesConfig if BitsAndBytes quantization should be applied, None otherwise
+        """
+        # Check if model is already quantized
+        quant_method = TransformersLLM._detect_quantization_method(model_name)
+
+        if quant_method:
+            print(f"⚠ Model is pre-quantized with: {quant_method}")
+            print("Loading model without additional quantization...")
+            return None
+
+        # Model is not pre-quantized, apply BitsAndBytes if requested
+        if load_in_4bit and torch.cuda.is_available():
+            print("Applying BitsAndBytes 4-bit quantization...")
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+
+        print("Loading model in full precision...")
+        return None
+
+    @staticmethod
+    def _load_awq_model(model_name: str, device: str = "cuda"):
+        """
+        Load AWQ model using AutoAWQ library directly.
+
+        This bypasses transformers' built-in AWQ support which has compatibility issues
+        with newer versions of transformers.
+
+        Args:
+            model_name: HuggingFace model name or path
+            device: Device to load model on
+
+        Returns:
+            Loaded AWQ model
+
+        Raises:
+            ImportError: If autoawq is not available
+            Exception: If model loading fails
+        """
+        if not AUTOAWQ_AVAILABLE:
+            raise ImportError(
+                "AutoAWQ is not available. Install it with: pip install autoawq"
+            )
+
+        print("Loading AWQ model using AutoAWQ library...")
+        try:
+            model = AutoAWQForCausalLM.from_quantized(
+                model_name,
+                fuse_layers=True,
+                trust_remote_code=True,
+                safetensors=True,
+            )
+            print("✓ AWQ model loaded successfully")
+            return model
+        except Exception as e:
+            print(f"Failed to load with AutoAWQ: {e}")
+            raise
 
     def __init__(self, config: dict):
         """
-        Initialize Transformers model.
+        Initialize Transformers model with automatic quantization detection.
 
         Args:
             config: Configuration dictionary containing model settings
         """
         self.config = config
         model_name = config["model_name"]
-        device = config.get("device", "cuda")  # noqa: F841
         load_in_4bit = config.get("load_in_4bit", True)
 
         print(f"Loading Transformers model: {model_name}")
 
-        # Configure 4-bit quantization
-        if load_in_4bit and torch.cuda.is_available():
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True,
-            )
-            print("Using 4-bit quantization")
-        else:
-            quantization_config = None
-            print("Using full precision")
+        # Detect quantization method
+        quant_method = self._detect_quantization_method(model_name)
 
         # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name, trust_remote_code=True
+        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Load model
+        # Handle AWQ models specially
+        if quant_method == "awq":
+            print(f"⚠ Model is pre-quantized with: {quant_method}")
+
+            # Try to load with AutoAWQ first
+            if AUTOAWQ_AVAILABLE:
+                try:
+                    self.model = self._load_awq_model(model_name)
+                    return  # Success, early return
+                except Exception as e:
+                    print(f"AutoAWQ loading failed: {e}")
+                    print("Falling back to standard transformers loading...")
+            else:
+                print("AutoAWQ not available, trying standard transformers loading...")
+
+        # Standard loading path (for non-AWQ or if AWQ loading failed)
+        quantization_config = self._get_quantization_config(model_name, load_in_4bit)
+
+        # Prepare model loading kwargs
         model_kwargs = {
-            "quantization_config": quantization_config,
             "device_map": "auto" if torch.cuda.is_available() else None,
             "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
+            "trust_remote_code": True,
         }
+
+        # Add quantization config if needed
+        if quantization_config is not None:
+            model_kwargs["quantization_config"] = quantization_config
 
         # Add Flash Attention 2 if requested
         if config.get("use_flash_attention_2", False):
             model_kwargs["attn_implementation"] = "flash_attention_2"
             print("Using Flash Attention 2")
 
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
-
-        print(f"Model loaded on: {self.model.device}")
+        # Load model with error handling
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name, **model_kwargs
+            )
+            print(f"✓ Model loaded successfully on: {self.model.device}")
+        except Exception as e:
+            # If loading fails with quantization, try without it
+            if "quantization" in str(e).lower() and quantization_config is not None:
+                print(f"⚠ Loading with quantization failed: {e}")
+                print("Retrying without quantization...")
+                model_kwargs.pop("quantization_config", None)
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name, **model_kwargs
+                )
+                print(f"✓ Model loaded successfully on: {self.model.device}")
+            else:
+                raise
 
     def generate(self, messages: List[Dict[str, str]], **kwargs) -> Iterator[str]:
         """

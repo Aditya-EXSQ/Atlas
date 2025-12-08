@@ -1,17 +1,17 @@
 import os
-import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import faiss
 import numpy as np
 
+from memory.db_models import SyncMemoryRepository
 from utils.timing import measure_time
 
 
 class PersistentRAGStore:
     """
-    Persistent RAG store using FAISS for vectors and SQLite for metadata.
+    Persistent RAG store using FAISS for vectors and SQLAlchemy ORM for metadata.
     Implements normalization for cosine similarity and proper persistence.
     """
 
@@ -39,32 +39,18 @@ class PersistentRAGStore:
         # Create index directory if it doesn't exist
         os.makedirs(index_path, exist_ok=True)
 
-        # Initialize FAISS index and SQLite DB
+        # Initialize FAISS index and ORM repository
         self.index = None
-        self.db_conn = None
+        self.repository = None
         self._initialize_storage()
 
     def _initialize_storage(self):
         """
-        Initialize or load existing FAISS index and SQLite database.
+        Initialize or load existing FAISS index and database.
         """
-        # Initialize SQLite database
-        self.db_conn = sqlite3.connect(self.db_file)
-        self.db_conn.row_factory = sqlite3.Row  # Access columns by name
-        cursor = self.db_conn.cursor()
-
-        # Create table if it doesn't exist
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                text TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL,
-                type TEXT NOT NULL
-            )
-        """
-        )
-        self.db_conn.commit()
+        # Initialize ORM repository
+        self.repository = SyncMemoryRepository(self.db_file)
+        self.repository.initialize()
 
         # Initialize or load FAISS index
         if os.path.exists(self.index_file):
@@ -77,8 +63,7 @@ class PersistentRAGStore:
 
         # Verify consistency
         vector_count = self.index.ntotal
-        cursor.execute("SELECT COUNT(*) FROM memories")
-        db_count = cursor.fetchone()[0]
+        db_count = self.repository.count_memories()
 
         if vector_count != db_count:
             print(
@@ -127,26 +112,14 @@ class PersistentRAGStore:
         # Add to FAISS
         self.index.add(normalized_emb.astype("float32"))
 
-        # Add to SQLite
-        if created_at is None:
-            created_at = datetime.now()
+        # Add to database using ORM
+        memory = self.repository.add_memory(text, memory_type, created_at)
 
-        cursor = self.db_conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO memories (text, created_at, type)
-            VALUES (?, ?, ?)
-        """,
-            (text, created_at, memory_type),
-        )
-        self.db_conn.commit()
-
-        memory_id = cursor.lastrowid
         print(
-            f"Added {memory_type} memory (ID: {memory_id}). Total: {self.index.ntotal}"
+            f"Added {memory_type} memory (ID: {memory.id}). Total: {self.index.ntotal}"
         )
 
-        return memory_id
+        return memory.id
 
     def search(
         self, query_embedding: np.ndarray, top_k: int = 50
@@ -178,39 +151,22 @@ class PersistentRAGStore:
         with measure_time("RAG search time"):
             scores, indices = self.index.search(normalized_query.astype("float32"), k)
 
-        # Fetch metadata from SQLite
-        cursor = self.db_conn.cursor()
+        # Fetch metadata from database using ORM
         results = []
 
         for idx, score in zip(indices[0], scores[0]):
             # FAISS IDs are 0-indexed, SQLite IDs are 1-indexed
             db_id = int(idx) + 1
 
-            cursor.execute(
-                """
-                SELECT id, text, created_at, type
-                FROM memories
-                WHERE id = ?
-            """,
-                (db_id,),
-            )
-
-            row = cursor.fetchone()
-            if row:
-                memory = {
-                    "id": row["id"],
-                    "content": row["text"],  # Use 'content' for compatibility
-                    "text": row["text"],  # Also provide 'text'
-                    "created_at": row["created_at"],
-                    "type": row["type"],
-                }
-                results.append((memory, float(score)))
+            memory = self.repository.get_memory_by_id(db_id)
+            if memory:
+                results.append((memory.to_dict(), float(score)))
 
         return results
 
     def save(self):
         """
-        Save FAISS index to disk. SQLite is auto-committed.
+        Save FAISS index to disk. Database is auto-committed by ORM.
         """
         if self.index.ntotal > 0:
             faiss.write_index(self.index, self.index_file)
@@ -234,10 +190,7 @@ class PersistentRAGStore:
         Returns:
             Dictionary with vector_count and db_count
         """
-        cursor = self.db_conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM memories")
-        db_count = cursor.fetchone()[0]
-
+        db_count = self.repository.count_memories()
         return {"vector_count": self.index.ntotal, "db_count": db_count}
 
     def clear(self):
@@ -245,19 +198,15 @@ class PersistentRAGStore:
         Clear all vectors and metadata from the store.
         """
         self.index.reset()
-
-        cursor = self.db_conn.cursor()
-        cursor.execute("DELETE FROM memories")
-        self.db_conn.commit()
-
+        self.repository.delete_all_memories()
         print("Cleared RAG store")
 
     def close(self):
         """
         Close the database connection.
         """
-        if self.db_conn:
-            self.db_conn.close()
+        if self.repository:
+            self.repository.close()
 
     def __del__(self):
         """
