@@ -4,10 +4,10 @@ Test script to verify the message storage fix.
 Simulates a conversation and checks database for balanced storage.
 """
 
-import subprocess
-import sqlite3
-import time
 import os
+import sqlite3
+import subprocess
+import time
 
 
 def send_message(process, message):

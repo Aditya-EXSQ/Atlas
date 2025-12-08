@@ -79,6 +79,37 @@ def get_available_quantization_methods() -> list[str]:
     return available
 
 
+def get_device_map_for_quantization(
+    quant_method: Optional[str], cuda_available: bool = True
+) -> Optional[str]:
+    """
+    Get the appropriate device_map for a given quantization method.
+
+    Different quantization methods have different requirements for device placement:
+    - AWQ: Must be loaded entirely on GPU, cannot use CPU/disk offloading
+    - GPTQ: Can use auto device mapping (TODO: verify when implemented)
+    - Others: Can use auto device mapping
+
+    Args:
+        quant_method: The quantization method name ('awq', 'gptq', etc.) or None
+        cuda_available: Whether CUDA is available
+
+    Returns:
+        Device map string ('auto', 'cuda:0', etc.) or None
+    """
+    if not cuda_available:
+        return None
+
+    # AWQ models cannot use device_map="auto" as it may offload to CPU/disk
+    # They must be loaded entirely on GPU
+    if quant_method == "awq":
+        return "cuda:0"  # Force GPU-only loading
+
+    # For other quantization methods or no quantization, use auto placement
+    # TODO: Add specific handling for GPTQ, GGUF, etc. as they're implemented
+    return "auto"
+
+
 def print_quantization_status() -> None:
     """Print the status of all quantization libraries."""
     print("=" * 60)

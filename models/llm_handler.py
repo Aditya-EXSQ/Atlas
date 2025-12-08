@@ -21,6 +21,7 @@ from models.quantization_config import (
     AWQ_AVAILABLE,  # noqa: F401
     AutoAWQForCausalLM,
     AwqConfig,  # noqa: F401
+    get_device_map_for_quantization,
 )
 from utils.timing import measure_generation
 
@@ -191,6 +192,13 @@ class TransformersLLM(BaseLLM):
         quantization_config = self._get_quantization_config(model_name, load_in_4bit)
 
         # Prepare model loading kwargs
+        # Get appropriate device_map based on quantization method
+        device_map_value = get_device_map_for_quantization(
+            quant_method, torch.cuda.is_available()
+        )
+        
+        model_kwargs = {
+            "device_map": device_map_value,
         model_kwargs = {
             "device_map": "auto" if torch.cuda.is_available() else None,
             "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
