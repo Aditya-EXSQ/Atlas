@@ -42,6 +42,7 @@ class PersistentRAGStore:
         # Initialize FAISS index and ORM repository
         self.index = None
         self.repository = None
+        self.current_session_id = None
         self._initialize_storage()
 
     def _initialize_storage(self):
@@ -69,6 +70,41 @@ class PersistentRAGStore:
             print(
                 f"⚠ Warning: Index has {vector_count} vectors but DB has {db_count} entries"
             )
+
+    def create_session(self, name: str) -> int:
+        """
+        Create a new chat session.
+
+        Args:
+            name: Name of the session
+
+        Returns:
+            Session ID
+        """
+        session = self.repository.create_session(name)
+        self.current_session_id = session.id
+        print(f"Created new session: {name} (ID: {session.id})")
+        return session.id
+
+    def set_session(self, session_id: int):
+        """
+        Set the current active session.
+
+        Args:
+            session_id: Session ID to activate
+        """
+        self.current_session_id = session_id
+        print(f"Switched to session ID: {session_id}")
+
+    def list_sessions(self) -> List[Dict]:
+        """
+        List all available sessions.
+
+        Returns:
+            List of session dictionaries
+        """
+        sessions = self.repository.get_all_sessions()
+        return [session.to_dict() for session in sessions]
 
     def _normalize(self, embedding: np.ndarray) -> np.ndarray:
         """
@@ -113,10 +149,12 @@ class PersistentRAGStore:
         self.index.add(normalized_emb.astype("float32"))
 
         # Add to database using ORM
-        memory = self.repository.add_memory(text, memory_type, created_at)
+        memory = self.repository.add_memory(
+            text, memory_type, created_at, session_id=self.current_session_id
+        )
 
         print(
-            f"Added {memory_type} memory (ID: {memory.id}). Total: {self.index.ntotal}"
+            f"Added {memory_type} memory (ID: {memory.id}) to session {self.current_session_id}. Total: {self.index.ntotal}"
         )
 
         return memory.id
@@ -125,7 +163,7 @@ class PersistentRAGStore:
         self, query_embedding: np.ndarray, top_k: int = 50
     ) -> List[Tuple[Dict[str, any], float]]:
         """
-        Search for similar memories.
+        Search for similar memories in the current session.
 
         Args:
             query_embedding: Query embedding vector (will be normalized)
@@ -145,13 +183,17 @@ class PersistentRAGStore:
             normalized_query = normalized_query.reshape(1, -1)
 
         # Limit top_k to available vectors
-        k = min(top_k, self.index.ntotal)
+        # Note: We retrieve more than top_k from FAISS to allow for post-filtering by session
+        # Strategy: Retrieve 4x requested k, then filter
+        search_k = min(top_k * 4, self.index.ntotal)
 
         # Search FAISS
         with measure_time("RAG search time"):
-            scores, indices = self.index.search(normalized_query.astype("float32"), k)
+            scores, indices = self.index.search(
+                normalized_query.astype("float32"), search_k
+            )
 
-        # Fetch metadata from database using ORM
+        # Fetch metadata from database using ORM and filter by session
         results = []
 
         for idx, score in zip(indices[0], scores[0]):
@@ -159,8 +201,22 @@ class PersistentRAGStore:
             db_id = int(idx) + 1
 
             memory = self.repository.get_memory_by_id(db_id)
+
+            # Filter by current session if set
             if memory:
+                # If current_session_id is set, only comprise memories from that session
+                # If not set (legacy behavior), include everything
+                if (
+                    self.current_session_id is not None
+                    and memory.session_id != self.current_session_id
+                ):
+                    continue
+
                 results.append((memory.to_dict(), float(score)))
+
+                # Stop if we have enough results
+                if len(results) >= top_k:
+                    break
 
         return results
 

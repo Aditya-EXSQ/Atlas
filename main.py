@@ -223,10 +223,78 @@ class ChatBot:
 
         return full_response
 
+    def select_session(self):
+        """
+        Prompt user to select an existing session or create a new one.
+        """
+        print_colored("\n" + "=" * 60, "system")
+        print_colored("SESSION MANAGEMENT", "system")
+        print_colored("=" * 60, "system")
+
+        sessions = self.rag_store.list_sessions()
+
+        if not sessions:
+            print_colored("No existing sessions found. Creating a new one.", "system")
+            self._create_new_session()
+            return
+
+        print_colored("\nAvailable Sessions:", "system")
+        for i, session in enumerate(sessions):
+            print_colored(
+                f"{i + 1}. {session['name']} ({session['created_at']})", "system"
+            )
+
+        print_colored(f"{len(sessions) + 1}. Start New Session", "system")
+
+        while True:
+            try:
+                print_colored("\nSelect an option: ", "user", "", end="")
+                choice = input().strip()
+
+                if not choice.isdigit():
+                    print_colored("Invalid input. Please enter a number.", "error")
+                    continue
+
+                choice_idx = int(choice) - 1
+
+                if 0 <= choice_idx < len(sessions):
+                    session = sessions[choice_idx]
+                    self.rag_store.set_session(session["id"])
+                    print_colored(f"Resuming session: {session['name']}", "system")
+                    return
+                elif choice_idx == len(sessions):
+                    self._create_new_session()
+                    return
+                else:
+                    print_colored("Invalid selection. Try again.", "error")
+            except ValueError:
+                print_colored("Invalid input. Please enter a number.", "error")
+
+    def _create_new_session(self):
+        """
+        Create a new session with user-provided name.
+        """
+        print_colored(
+            "\nEnter name for new session (or press Enter for auto-generated): ",
+            "user",
+            "",
+            end="",
+        )
+        name = input().strip()
+
+        if not name:
+            import datetime
+
+            name = f"Session {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+        self.rag_store.create_session(name)
+
     def chat_loop(self):
         """
         Main interactive chat loop.
         """
+        self.select_session()
+
         print_colored("\n" + "=" * 60, "system")
         print_colored("ChatBot Ready! Type 'exit', 'quit', or 'bye' to end.", "system")
         print_colored("=" * 60 + "\n", "system")
