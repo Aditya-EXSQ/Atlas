@@ -17,6 +17,33 @@ class Base(DeclarativeBase):
     pass
 
 
+class Session(Base):
+    """
+    Session model representing a chat session.
+
+    Attributes:
+        id: Primary key auto-incremented ID
+        name: Name of the session
+        created_at: Timestamp when the session was created
+    """
+
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    def to_dict(self) -> Dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "created_at": self.created_at,
+        }
+
+    def __repr__(self) -> str:
+        return f"<Session(id={self.id}, name={self.name})>"
+
+
 class Memory(Base):
     """
     Memory model representing stored conversation memories.
@@ -26,6 +53,7 @@ class Memory(Base):
         text: The actual text content of the memory
         created_at: Timestamp when the memory was created
         type: Type of memory ('user' or 'assistant')
+        session_id: Foreign key linking to a session
     """
 
     __tablename__ = "memories"
@@ -34,6 +62,7 @@ class Memory(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     type: Mapped[str] = mapped_column(String, nullable=False)
+    session_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     def to_dict(self) -> Dict:
         """
@@ -48,10 +77,11 @@ class Memory(Base):
             "content": self.text,  # Alias for compatibility
             "created_at": self.created_at,
             "type": self.type,
+            "session_id": self.session_id,
         }
 
     def __repr__(self) -> str:
-        return f"<Memory(id={self.id}, type={self.type}, created_at={self.created_at})>"
+        return f"<Memory(id={self.id}, type={self.type}, session_id={self.session_id})>"
 
 
 class MemoryRepository:
@@ -82,11 +112,42 @@ class MemoryRepository:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
+    async def create_session(self, name: str) -> Session:
+        """
+        Create a new chat session.
+
+        Args:
+            name: Name of the session
+
+        Returns:
+            Created Session object
+        """
+        session = Session(name=name, created_at=datetime.now())
+        async with self.async_session() as session_db:
+            session_db.add(session)
+            await session_db.commit()
+            await session_db.refresh(session)
+            return session
+
+    async def get_all_sessions(self) -> List[Session]:
+        """
+        Get all chat sessions.
+
+        Returns:
+            List of all Session objects
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(Session).order_by(Session.created_at.desc())
+            )
+            return list(result.scalars().all())
+
     async def add_memory(
         self,
         text: str,
         memory_type: str = "user",
         created_at: Optional[datetime] = None,
+        session_id: Optional[int] = None,
     ) -> Memory:
         """
         Add a new memory to the database.
@@ -95,6 +156,7 @@ class MemoryRepository:
             text: The text content of the memory
             memory_type: Type of memory ('user' or 'assistant')
             created_at: Timestamp (defaults to now)
+            session_id: ID of the session this memory belongs to
 
         Returns:
             The created Memory instance
@@ -102,7 +164,9 @@ class MemoryRepository:
         if created_at is None:
             created_at = datetime.now()
 
-        memory = Memory(text=text, type=memory_type, created_at=created_at)
+        memory = Memory(
+            text=text, type=memory_type, created_at=created_at, session_id=session_id
+        )
 
         async with self.async_session() as session:
             session.add(memory)
@@ -125,15 +189,22 @@ class MemoryRepository:
             result = await session.get(Memory, memory_id)
             return result
 
-    async def get_all_memories(self) -> List[Memory]:
+    async def get_all_memories(self, session_id: Optional[int] = None) -> List[Memory]:
         """
-        Retrieve all memories from the database.
+        Retrieve all memories from the database, optionally filtered by session.
+
+        Args:
+            session_id: Optional session ID to filter by
 
         Returns:
-            List of all Memory instances
+            List of Memory instances
         """
         async with self.async_session() as session:
-            result = await session.execute(select(Memory))
+            stmt = select(Memory)
+            if session_id is not None:
+                stmt = stmt.where(Memory.session_id == session_id)
+
+            result = await session.execute(stmt)
             return list(result.scalars().all())
 
     async def count_memories(self) -> int:
@@ -187,17 +258,30 @@ class SyncMemoryRepository:
         if not self._closed:
             self._loop.run_until_complete(self.repo.initialize())
 
+    def create_session(self, name: str) -> Session:
+        """Create a session synchronously."""
+        if self._closed:
+            raise RuntimeError("Repository is closed")
+        return self._loop.run_until_complete(self.repo.create_session(name))
+
+    def get_all_sessions(self) -> List[Session]:
+        """Get all sessions synchronously."""
+        if self._closed:
+            return []
+        return self._loop.run_until_complete(self.repo.get_all_sessions())
+
     def add_memory(
         self,
         text: str,
         memory_type: str = "user",
         created_at: Optional[datetime] = None,
+        session_id: Optional[int] = None,
     ) -> Memory:
         """Add a memory synchronously."""
         if self._closed:
             raise RuntimeError("Repository is closed")
         return self._loop.run_until_complete(
-            self.repo.add_memory(text, memory_type, created_at)
+            self.repo.add_memory(text, memory_type, created_at, session_id)
         )
 
     def get_memory_by_id(self, memory_id: int) -> Optional[Memory]:
@@ -206,11 +290,11 @@ class SyncMemoryRepository:
             return None
         return self._loop.run_until_complete(self.repo.get_memory_by_id(memory_id))
 
-    def get_all_memories(self) -> List[Memory]:
+    def get_all_memories(self, session_id: Optional[int] = None) -> List[Memory]:
         """Get all memories synchronously."""
         if self._closed:
             return []
-        return self._loop.run_until_complete(self.repo.get_all_memories())
+        return self._loop.run_until_complete(self.repo.get_all_memories(session_id))
 
     def count_memories(self) -> int:
         """Count memories synchronously."""
