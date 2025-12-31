@@ -55,5 +55,5 @@ def measure_generation(generator: Iterator[str]) -> Iterator[str]:
         else:
             tps = 0.0
 
-        print_colored(f"Total generation time: {total_time:.4f}s", "system")
+        print_colored(f"\nTotal generation time: {total_time:.4f}s", "system")
         print_colored(f"TPS: {tps:.2f}", "system")

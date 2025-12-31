@@ -3,14 +3,14 @@
 Multi-Turn Conversational ChatBot with Memory and RAG
 ======================================================
 A chatbot with conversation memory management using FAISS-based RAG.
-Supports both HuggingFace Transformers and Ollama backends.
-
+Supports HuggingFace Transformers, Ollama and vLLM backends.
+`
 Features:
 - Maintains last 5 conversation turns in active memory
 - Archives older conversations in FAISS vector store
 - Retrieves relevant past context using RAG
 - Streaming response generation
-- Supports multiple LLM backends (Transformers/Ollama)
+- Supports multiple LLM backends (Transformers/Ollama/vLLM)
 """
 
 import os
@@ -21,7 +21,7 @@ from typing import Dict
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from memory import ConversationManager, RAGStore
+from memory import ConversationManager, PersistentRAGStore, Reranker
 from models import EmbeddingModel, create_llm
 from utils import load_config, print_colored
 
@@ -46,7 +46,7 @@ class ChatBot:
         self.config = load_config(config_path)
 
         # Initialize embedding model
-        print_colored("\n[1/4] Loading Embedding Model...", "system")
+        print_colored("\n[1/5] Loading Embedding Model...", "system")
         embedding_config = self.config["embedding"]
         self.embedding_model = EmbeddingModel(
             model_name=embedding_config["model_name"],
@@ -54,25 +54,36 @@ class ChatBot:
         )
 
         # Initialize RAG store
-        print_colored("\n[2/4] Initializing RAG Store...", "system")
+        print_colored("\n[2/5] Initializing Persistent RAG Store...", "system")
         faiss_config = self.config["faiss"]
-        self.rag_store = RAGStore(
+        self.rag_store = PersistentRAGStore(
             embedding_dim=self.embedding_model.get_dimension(),
             index_path=faiss_config["index_path"],
-            index_file=faiss_config["index_file"],
-            metadata_file=faiss_config["metadata_file"],
+            index_file=faiss_config.get("index_file", "conversation_index.faiss"),
+            db_file=faiss_config.get("db_file", "rag_metadata.db"),
+        )
+
+        # Initialize reranker
+        print_colored("\n[3/5] Loading Reranker...", "system")
+        reranker_config = self.config.get("reranker", {})
+        self.reranker = Reranker(
+            model_name=reranker_config.get(
+                "model_name", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+            ),
+            device=reranker_config.get("device", "cuda"),
         )
 
         # Initialize conversation manager
-        print_colored("\n[3/4] Initializing Conversation Manager...", "system")
+        print_colored("\n[4/5] Initializing Conversation Manager...", "system")
         memory_config = self.config["memory"]
         self.conversation_manager = ConversationManager(
             max_active_turns=memory_config["max_active_turns"]
         )
-        self.rag_top_k = memory_config.get("rag_top_k", 3)
+        self.rag_retrieve_k = memory_config.get("rag_retrieve_k", 50)
+        self.rag_rerank_k = memory_config.get("rag_rerank_k", 5)
 
         # Initialize LLM
-        print_colored("\n[4/4] Loading LLM...", "system")
+        print_colored("\n[5/5] Loading LLM...", "system")
         backend = self.config.get("backend", "ollama")
         print_colored(f"Using backend: {backend.upper()}", "system")
         self.llm = create_llm(self.config)
@@ -83,7 +94,7 @@ class ChatBot:
 
     def _retrieve_rag_context(self, user_message: str) -> str:
         """
-        Retrieve relevant context from RAG store.
+        Retrieve relevant context from RAG store using retrieve-then-rerank.
 
         Args:
             user_message: Current user message
@@ -97,18 +108,29 @@ class ChatBot:
         # Embed user message
         query_embedding = self.embedding_model.encode(user_message)
 
-        # Search for similar past conversations
-        results = self.rag_store.search(query_embedding, top_k=self.rag_top_k)
+        # Step 1: Retrieve top_k candidates from FAISS
+        candidates = self.rag_store.search(query_embedding, top_k=self.rag_retrieve_k)
 
-        if not results:
+        if not candidates:
+            return ""
+
+        # Step 2: Rerank using cross-encoder
+        reranked_results = self.reranker.rerank(
+            query=user_message,
+            candidates=[c[0] for c in candidates],  # Extract just the memory dicts
+            top_k=self.rag_rerank_k,
+        )
+
+        if not reranked_results:
             return ""
 
         # Format context
         context_parts = ["[Relevant past conversation context:]"]
-        for turn, score in results:
-            context_parts.append(
-                f"- {turn['role']}: {turn['content']} (similarity: {score:.2f})"
-            )
+        for memory, score in reranked_results:
+            # Handle both 'content' and 'text' fields
+            text = memory.get("content", memory.get("text", ""))
+            memory_type = memory.get("type", "unknown")
+            context_parts.append(f"- {memory_type}: {text} (relevance: {score:.3f})")
 
         return "\n".join(context_parts) + "\n"
 
@@ -124,7 +146,21 @@ class ChatBot:
 
         # Embed and store
         embedding = self.embedding_model.encode(turn_text)
-        self.rag_store.add_turn(embedding, turn)
+        memory_type = turn.get("role", "user")
+        self.rag_store.add(embedding, turn["content"], memory_type=memory_type)
+
+    def _save_remaining_turns(self):
+        """
+        Save all remaining active turns to RAG store.
+        Called when user exits to persist unarchived conversation.
+        """
+        active_turns = self.conversation_manager.get_active_turns()
+        if active_turns:
+            print_colored(
+                f"\n[💾 Saving {len(active_turns)} remaining turns to RAG]", "system"
+            )
+            for turn in active_turns:
+                self._archive_turn(turn)
 
     def generate_response(self, user_message: str) -> str:
         """
@@ -153,7 +189,7 @@ class ChatBot:
         # Add RAG context to the latest user message if available
         if rag_context:
             print_colored(
-                f"\n[🔍 Retrieved {self.rag_top_k} similar past conversations]",
+                f"\n[🔍 Retrieved top {self.rag_rerank_k} (from {self.rag_retrieve_k}) relevant memories]",
                 "system",
             )
             messages[-1]["content"] = rag_context + "\n" + messages[-1]["content"]
@@ -187,10 +223,78 @@ class ChatBot:
 
         return full_response
 
+    def select_session(self):
+        """
+        Prompt user to select an existing session or create a new one.
+        """
+        print_colored("\n" + "=" * 60, "system")
+        print_colored("SESSION MANAGEMENT", "system")
+        print_colored("=" * 60, "system")
+
+        sessions = self.rag_store.list_sessions()
+
+        if not sessions:
+            print_colored("No existing sessions found. Creating a new one.", "system")
+            self._create_new_session()
+            return
+
+        print_colored("\nAvailable Sessions:", "system")
+        for i, session in enumerate(sessions):
+            print_colored(
+                f"{i + 1}. {session['name']} ({session['created_at']})", "system"
+            )
+
+        print_colored(f"{len(sessions) + 1}. Start New Session", "system")
+
+        while True:
+            try:
+                print_colored("\nSelect an option: ", "user", "", end="")
+                choice = input().strip()
+
+                if not choice.isdigit():
+                    print_colored("Invalid input. Please enter a number.", "error")
+                    continue
+
+                choice_idx = int(choice) - 1
+
+                if 0 <= choice_idx < len(sessions):
+                    session = sessions[choice_idx]
+                    self.rag_store.set_session(session["id"])
+                    print_colored(f"Resuming session: {session['name']}", "system")
+                    return
+                elif choice_idx == len(sessions):
+                    self._create_new_session()
+                    return
+                else:
+                    print_colored("Invalid selection. Try again.", "error")
+            except ValueError:
+                print_colored("Invalid input. Please enter a number.", "error")
+
+    def _create_new_session(self):
+        """
+        Create a new session with user-provided name.
+        """
+        print_colored(
+            "\nEnter name for new session (or press Enter for auto-generated): ",
+            "user",
+            "",
+            end="",
+        )
+        name = input().strip()
+
+        if not name:
+            import datetime
+
+            name = f"Session {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+        self.rag_store.create_session(name)
+
     def chat_loop(self):
         """
         Main interactive chat loop.
         """
+        self.select_session()
+
         print_colored("\n" + "=" * 60, "system")
         print_colored("ChatBot Ready! Type 'exit', 'quit', or 'bye' to end.", "system")
         print_colored("=" * 60 + "\n", "system")
@@ -203,7 +307,8 @@ class ChatBot:
 
                 # Check for exit commands
                 if user_input.lower() in ["exit", "quit", "bye", "q"]:
-                    print_colored("\nGoodbye! Saving RAG store...", "system")
+                    print_colored("\nGoodbye! Saving conversation...", "system")
+                    self._save_remaining_turns()
                     self.rag_store.save()
                     print_colored("✓ Conversation saved successfully!", "system")
                     break
@@ -221,12 +326,14 @@ class ChatBot:
                 print_colored(f"\n[{status} | RAG Store: {rag_size} turns]\n", "system")
 
         except KeyboardInterrupt:
-            print_colored("\n\nInterrupted! Saving RAG store...", "system")
+            print_colored("\n\nInterrupted! Saving conversation...", "system")
+            self._save_remaining_turns()
             self.rag_store.save()
             print_colored("✓ Conversation saved successfully!", "system")
 
         except Exception as e:
             print_colored(f"\nError in chat loop: {e}", "error")
+            self._save_remaining_turns()
             self.rag_store.save()
 
 
