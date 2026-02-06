@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from typing import AsyncIterator, List, Optional
 
 from atlas.client import LLMClient
@@ -168,10 +169,15 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionRequest):
-        # Concatenate messages into a single prompt
-        prompt = "\n".join(
-            f"{m.role}: {m.content}" for m in body.messages
-        )
+        # Extract the last user message as the prompt, keeping prior
+        # messages as context so the provider sees a meaningful input.
+        user_msgs = [m for m in body.messages if m.role == "user"]
+        if user_msgs:
+            prompt = user_msgs[-1].content
+        else:
+            prompt = "\n".join(
+                f"{m.role}: {m.content}" for m in body.messages
+            )
 
         if body.stream:
             return StreamingResponse(
@@ -257,6 +263,7 @@ async def _stream_chat(
 ) -> AsyncIterator[str]:
     import json
 
+    stream_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     async for chunk in client.stream(
         prompt=prompt,
         model=body.model,
@@ -266,8 +273,9 @@ async def _stream_chat(
         stop=body.stop,
     ):
         data = {
-            "id": f"chatcmpl-{int(time.time())}",
+            "id": stream_id,
             "object": "chat.completion.chunk",
+            "created": int(time.time()),
             "model": chunk.model,
             "choices": [
                 {
