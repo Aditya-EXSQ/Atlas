@@ -18,6 +18,14 @@ pyyaml>=6.0
 requests>=2.31.0
 colorama>=0.4.6
 
+# Atlas inference framework
+httpx>=0.27.0
+openai>=1.0.0
+
+# Atlas optional server mode
+# fastapi>=0.100.0  # Uncomment for server mode
+# uvicorn>=0.23.0   # Uncomment for server mode
+
 # Optional: Flash Attention (for faster inference)
 # flash-attn>=2.3.0  # Uncomment if you want to use Flash Attention 2
 
