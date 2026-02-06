@@ -1,0 +1,15 @@
+{
+    // Ruff
+    "ruff.enable": true,
+    // "ruff.lint.run": "onSave",
+    "ruff.lint.fixOnSave": true,
+
+    // Format with Ruff
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.formatOnAutoSave": true,     // IMPORTANT for Auto Save users
+
+    // Auto Save
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000
+}

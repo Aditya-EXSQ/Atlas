@@ -1,8 +1,11 @@
 # ChatBot Configuration File
 
-# Backend selection: "transformers" or "ollama"
+# Backend selection: "transformers", "ollama", or "vllm"
 # backend: "ollama"  # Default to Ollama for ease of use
 backend: "transformers"  # Default to Transformers for flexibility
+# backend: "transformers_no_grad"
+# backend: "transformers_inference_mode"
+# backend: "vllm"  # Use vLLM for high-performance inference
 
 # Ollama Configuration
 ollama:
@@ -25,18 +28,80 @@ transformers:
   max_new_tokens: 512
   repetition_penalty: 1.1
 
+# Transformers with torch.no_grad() (for performance comparison)
+transformers_no_grad:
+  model_name: "mistralai/Mistral-7B-Instruct-v0.2"
+  device: "cuda"
+  load_in_4bit: true
+  use_flash_attention_2: false
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 50
+  max_new_tokens: 512
+  repetition_penalty: 1.1
+
+# Transformers with torch.inference_mode() (for performance comparison)
+transformers_inference_mode:
+  model_name: "Qwen/Qwen2.5-14B-Instruct-AWQ"
+  device: "cuda"
+  load_in_4bit: true
+  use_flash_attention_2: false
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 50
+  max_new_tokens: 4096
+  repetition_penalty: 1.1
+
+# vLLM Configuration (OpenAI-compatible API server)
+vllm:
+  model_name: "microsoft/phi-2"  # or "mistralai/Mistral-7B-Instruct-v0.2"
+  port: 8080
+  base_url: "http://localhost:8080/v1"  # Auto-generated from port if not specified
+  api_key: "EMPTY"  # Use "EMPTY" for local server
+  served_model_name: null  # Optional: override model name in API (defaults to model_name)
+  
+  # Performance & Device Configuration
+  trust_remote_code: true
+  dtype: "auto"  # "auto", "half", "float16", "bfloat16", "float32"
+  tensor_parallel_size: 1  # Number of GPUs for tensor parallelism (set >1 for multi-GPU)
+  gpu_memory_utilization: 0.9  # Fraction of GPU memory to use (0.0-1.0)
+  
+  # Quantization (for pre-quantized models)
+  # quantization: "awq"  # Options: "awq", "gptq", "squeezellm", or null
+  
+  # Advanced Options
+  max_model_len: null  # Override maximum context length (null = use model default)
+  download_dir: null  # Custom directory for model downloads
+  swap_space: null  # CPU swap space in GiB for memory offloading
+  enforce_eager: false  # Disable CUDA graphs (for debugging)
+  seed: null  # Random seed for reproducibility
+  
+  # Generation Parameters
+  temperature: 0.7
+  top_p: 0.9
+  max_tokens: 512
+  presence_penalty: 0.0
+  frequency_penalty: 0.0
+
 # Embedding Model Configuration
 embedding:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
   device: "cuda"  # or "cpu"
 
+# Reranker Configuration
+reranker:
+  model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  device: "cuda"  # or "cpu"
+
 # Memory Configuration
 memory:
   max_active_turns: 5  # Keep last 5 conversation turns in active memory
-  rag_top_k: 3  # Retrieve top 3 similar past conversations from RAG
+  rag_retrieve_k: 50  # Retrieve top 50 candidates from FAISS
+  rag_rerank_k: 5  # Rerank and use top 5 most relevant memories
+  persist_min_length: 15  # Minimum message length to persist to long-term memory
 
 # FAISS Configuration
 faiss:
   index_path: "./faiss_index"  # Path to save/load FAISS index
   index_file: "conversation_index.faiss"
-  metadata_file: "conversation_metadata.pkl"
+  db_file: "rag_metadata.db"  # SQLite database for metadata

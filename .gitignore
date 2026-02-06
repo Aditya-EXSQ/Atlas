@@ -1,5 +1,8 @@
+__pycache__
+.ruff_cache
+
 /faiss_index
 
 .env
 
-__pycache__
+Journey.txt

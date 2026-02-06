@@ -5,21 +5,18 @@ Quick Start Guide for ChatBot
 This script helps you get started with the chatbot.
 """
 
-import os
-import sys
-
 
 def print_section(title):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {title}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 def main():
     print_section("ChatBot - Quick Start Guide")
-    
+
     print("Your chatbot is ready! Here's how to get started:\n")
-    
+
     print("📋 OPTION 1: Using Ollama (Recommended for Beginners)")
     print("-" * 60)
     print("1. Install Ollama:")
@@ -34,7 +31,7 @@ def main():
     print("   python verify_setup.py")
     print("\n6. Run the chatbot:")
     print("   python main.py")
-    
+
     print("\n\n📋 OPTION 2: Using HuggingFace Transformers")
     print("-" * 60)
     print("1. Install PyTorch with CUDA 12:")
@@ -50,7 +47,7 @@ def main():
     print("   python verify_setup.py")
     print("\n6. Run the chatbot:")
     print("   python main.py")
-    
+
     print("\n\n💡 Tips:")
     print("-" * 60)
     print("• Check README.md for detailed documentation")
@@ -58,13 +55,13 @@ def main():
     print("• Configuration is in config/model_config.yaml")
     print("• Type 'exit', 'quit', or 'bye' to end conversation")
     print("• Conversation history is saved in faiss_index/")
-    
+
     print("\n\n🔧 Troubleshooting:")
     print("-" * 60)
     print("• CUDA out of memory? Enable 4-bit quantization in config")
     print("• Ollama connection error? Make sure 'ollama serve' is running")
     print("• FAISS GPU error? Install faiss-cpu instead of faiss-gpu")
-    
+
     print("\n\n📚 Project Structure:")
     print("-" * 60)
     print("config/          - Configuration files")
@@ -73,12 +70,13 @@ def main():
     print("utils/           - Utility functions")
     print("main.py          - Main chatbot application")
     print("verify_setup.py  - Dependency verification script")
-    
+
     print_section("Ready to Chat!")
-    
+
     # Check if Ollama is running
     try:
         import requests
+
         response = requests.get("http://localhost:11434/api/tags", timeout=2)
         if response.status_code == 200:
             print("✓ Ollama is running! You can start with:")
